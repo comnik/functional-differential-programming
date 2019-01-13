@@ -38,18 +38,34 @@
 
 (declare engine)
 
-(defn reconcile!
+(def ^:private reconcile? (volatile! false))
+
+(def ^:private schedule
+  (or (and (exists? js/window)
+           (or js/window.requestAnimationFrame
+               js/window.webkitRequestAnimationFrame
+               js/window.mozRequestAnimationFrame
+               js/window.msRequestAnimationFrame))
+      #(js/setTimeout % 16)))
+
+(defn reconcile [t]
+  (let [work-remaining? (.step engine)]
+    (if work-remaining?
+      (schedule reconcile)
+      (vreset! reconcile? false))))
+
+(defn request-reconcile
   "Schedules engine steps on animation frames until all dataflows are
   caught up with all inputs."
-  [t]
-  (let [work-remaining? (.step engine)]
-    (when work-remaining?
-      (.requestAnimationFrame js/window reconcile!))))
+  []
+  (when-not @reconcile?
+    (schedule reconcile))
+  (vreset! reconcile? true))
 
 (defn exec!
   [requests]
   (->> requests (clj->js) (.handle engine))
-  (reconcile! nil))
+  (request-reconcile))
 
 (def schema
   {:key/pressed? {:db/valueType :Bool}
@@ -120,9 +136,7 @@
                  [32 :key/pressed? ?v]
                  [13 :key/pressed? ?v]])))
 
-         (setup)
-         
-         (.requestAnimationFrame js/window reconcile!))))
+         (setup))))
     true))
 
 (def v-width (.-innerWidth js/window))
