@@ -6,12 +6,27 @@
 
 (enable-console-print!)
 
-(def registry (atom {}))
+(defonce registry (atom {}))
 
-(deftype Watcher [watches]
+(defprotocol IWatcher
+  (-apply-diff [this batch])
+  (-notify-of-diff [this batch]))
+
+(deftype Watcher [watches state apply-diff]
+  IWatcher
+  (-apply-diff [this batch]
+    (set! (.-state this) (apply-diff state batch))
+    (-notify-of-diff this batch))
+  (-notify-of-diff [this batch]
+    (doseq [[key f] watches]
+      (f key this batch)))
+  
+  cljs.core/IDeref
+  (-deref [_] state)
+  
   cljs.core/IWatchable
   (-notify-watches [this oldval newval]
-    (doseq [[key f] (.-watches this)]
+    (doseq [[key f] watches]
       (f key this oldval newval)))
   (-add-watch [this key f]
     (set! (.-watches this) (assoc watches key f))
@@ -19,22 +34,39 @@
   (-remove-watch [this key]
     (set! (.-watches this) (dissoc watches key))))
 
-(defn watcher [] (Watcher. nil))
+(defn watcher [apply-diff] (Watcher. nil (apply-diff) apply-diff))
 
-(defn notify-watches-of-diff [^Watcher watcher batch]
-  (doseq [[key f] (.-watches watcher)]
-    (f key watcher batch)))
+(defn set-watcher []
+  (let [apply-diff (fn
+                     ([] #{})
+                     ([v batch] (into v batch)))]
+    (watcher apply-diff)))
+
+(defn tuple-watcher [attributes]
+  (let [apply-diff (fn
+                     ([] {})
+                     ([v batch]
+                      (let [tuple   (first (last batch))
+                            changes (zipmap attributes tuple)]
+                        (merge v changes))))]
+    (watcher apply-diff)))
 
 (defn add-watch! [name key f]
-  (if (contains? @registry name)
-    (swap! registry update name (fn [watcher] (add-watch watcher key f)))
-    (swap! registry assoc name (-> (watcher) (add-watch key f)))))
+  (assert (contains? @registry name) "no watcher registered under that name")
+  (swap! registry update name (fn [watcher] (add-watch watcher key f))))
 
 ;; The wasm engine will call this function on all output batches.
-(gobj/set js/window "__UGLY_DIFF_HOOK" (fn [name batch]
-                                         (if-some [watcher (get @registry name)]
-                                           (notify-watches-of-diff watcher batch)
-                                           (println name batch))))
+(gobj/set
+ js/window "__UGLY_DIFF_HOOK"
+ (fn [name batch]
+   (let [unwrap-type  (fn [boxed] (second (first boxed)))
+         unwrap-tuple (fn [[tuple diff timestamp]] [(mapv unwrap-type tuple) diff timestamp])]
+     (if-some [watcher (get @registry name)]
+       (let [batch (->> batch
+                        (js->clj)
+                        (map unwrap-tuple))]
+         (-apply-diff watcher batch))
+       (println name batch)))))
 
 (declare engine)
 
@@ -62,10 +94,32 @@
     (schedule reconcile))
   (vreset! reconcile? true))
 
+(defn pipe-log [x]
+  (println x)
+  x)
+
 (defn exec!
   [requests]
-  (->> requests (clj->js) (.handle engine))
+  (->> requests (clj->js) (pipe-log) (.handle engine))
   (request-reconcile))
+
+(def v-width (.-innerWidth js/window))
+(def v-height (.-innerHeight js/window))
+
+(rum/defc root
+  < {:init
+     (fn [state props]
+       (assoc state :fdp/key (random-uuid)))
+     :will-mount
+     (fn [state]
+       (let [key       (:fdp/key state)
+             component (:rum/react-component state)]
+         (add-watch! "mouse" key (fn [_ _ batch] (rum/request-render component)))))}
+  [watcher]
+  (let [{:mouse/keys [x y]} @watcher]
+    [:svg#canvas
+     [:g
+      [:circle {:cx x :cy y :r 30 :stroke "black" :fill "red"}]]]))
 
 (def schema
   {:key/pressed? {:db/valueType :Bool}
@@ -80,35 +134,38 @@
 (def mouse (next-id))
 
 (defn- handle-mousemove [e]
-  #_(let [x (. e -screenX)
-        y (. e -screenY)]
-    (exec!
-      (d/transact db [[:db/add mouse :mouse/x x]
-                      [:db/add mouse :mouse/y y]]))
-    (.stopPropagation e)
-    e))
+  (exec!
+    (concat
+     (let [{:mouse/keys [x y]} @(get @registry "mouse")]
+       (when (and (some? x) (some? y))
+         (d/transact db [[:db/retract mouse :mouse/x x]
+                         [:db/retract mouse :mouse/y y]])))
+     (d/transact db [[:db/add mouse :mouse/x (. e -screenX)]
+                     [:db/add mouse :mouse/y (. e -screenY)]])))
+  (.stopPropagation e)
+  e)
 
-(defn- handle-key-up [e]
+(defn- handle-keyup [e]
   (exec! (d/transact db [[:db/retract (. e -keyCode) :key/pressed? true]]))
   (.stopPropagation e)
   e)
 
-(defn- handle-key-down [e]
+(defn- handle-keydown [e]
   (exec! (d/transact db [[:db/add (. e -keyCode) :key/pressed? true]]))
   (.stopPropagation e)
   e)
 
 (defn ^:after-load setup []
   (println "setup")
-  (.addEventListener js/document "mousemove" handle-mousemove)
-  (.addEventListener js/document "keyup" handle-key-up)
-  (.addEventListener js/document "keydown" handle-key-down))
+  #_(.addEventListener js/document "mousemove" handle-mousemove)
+  #_(.addEventListener js/document "keyup" handle-keyup)
+  #_(.addEventListener js/document "keydown" handle-keydown))
 
 (defn ^:before-load teardown []
   (println "teardown")
-  (.removeEventListener js/document "mousemove" handle-mousemove)
-  (.removeEventListener js/document "keyup" handle-key-up)
-  (.removeEventListener js/document "keydown" handle-key-down))
+  #_(.removeEventListener js/document "mousemove" handle-mousemove)
+  #_(.removeEventListener js/document "keyup" handle-keyup)
+  #_(.removeEventListener js/document "keydown" handle-keydown))
 
 (defonce initialization-block
   (do
@@ -119,15 +176,17 @@
          (gobj/set js/window "__ENGINE" df)
          (println "Loaded")
 
-         ;; (add-watch! "keys" :debug (fn [key watcher batch] (println "keys result" batch)))
-
          (exec!
            (concat
             (d/create-db-inputs db)
             
+            ;; (d/register-query
+            ;;  db "keys"
+            ;;  '[:find ?key :where [?key :key/pressed? true]])
+            
             (d/register-query
-             db "keys"
-             '[:find ?key :where [?key :key/pressed? true]])
+             db "mouse"
+             '[:find ?x ?y :where [?mouse :mouse/x ?x] [?mouse :mouse/y ?y]])
 
             #_(d/register-query
                db "dosome"
@@ -136,39 +195,8 @@
                  [32 :key/pressed? ?v]
                  [13 :key/pressed? ?v]])))
 
-         (setup))))
+         (swap! registry assoc "mouse" (tuple-watcher [:mouse/x :mouse/y]))
+
+         (setup)
+         (rum/mount (root (get @registry "mouse")) (.getElementById js/document "app-container")))))
     true))
-
-(def v-width (.-innerWidth js/window))
-(def v-height (.-innerHeight js/window))
-
-(rum/defc root
-  < {:init
-     (fn [state props]
-       (assoc state :fdp/key (random-uuid)))
-     :will-mount
-     (fn [state]
-       (let [key       (:fdp/key state)
-             component (:rum/react-component state)]
-         (add-watch! "keys" key (fn [_ _ _] (rum/request-render component)))))}
-  []
-  [:svg#canvas
-   [:g
-    [:circle {:cx (rand-int v-width) :cy (rand-int v-height) :r 30 :stroke "black" :fill "red"}]]])
-
-(rum/mount (root) (.getElementById js/document "app-container"))
-
-(comment
-
-  (exec! (d/transact db [{:db/id 100 :mouse/x 100 :mouse/y 200}]))
-  
-  (exec!
-   (d/register-query
-    db "mouse-coords"
-    '[:find ?x ?y
-      :where
-      [?mouse :mouse/x ?x]
-      [?mouse :mouse/y ?y]]))
-
-  
-  )
