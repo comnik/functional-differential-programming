@@ -8,69 +8,25 @@
 
 (defonce registry (atom {}))
 
-(defprotocol IWatcher
-  (-apply-diff [this batch])
-  (-notify-of-diff [this batch]))
-
-(deftype Watcher [watches state apply-diff]
-  IWatcher
-  (-apply-diff [this batch]
-    (set! (.-state this) (apply-diff state batch))
-    (-notify-of-diff this batch))
-  (-notify-of-diff [this batch]
-    (doseq [[key f] watches]
-      (f key this batch)))
-  
-  cljs.core/IDeref
-  (-deref [_] state)
-  
-  cljs.core/IWatchable
-  (-notify-watches [this oldval newval]
-    (doseq [[key f] watches]
-      (f key this oldval newval)))
-  (-add-watch [this key f]
-    (set! (.-watches this) (assoc watches key f))
-    this)
-  (-remove-watch [this key]
-    (set! (.-watches this) (dissoc watches key))))
-
-(defn watcher [apply-diff] (Watcher. nil (apply-diff) apply-diff))
-
-(defn set-watcher []
-  (let [apply-diff (fn
-                     ([] #{})
-                     ([v batch] (into v batch)))]
-    (watcher apply-diff)))
-
-(defn tuple-watcher [attributes]
-  (let [apply-diff (fn
-                     ([] {})
-                     ([v batch]
-                      (let [tuple   (first (last batch))
-                            changes (zipmap attributes tuple)]
-                        (merge v changes))))]
-    (watcher apply-diff)))
-
 (defn add-watch! [name key f]
-  (assert (contains? @registry name) "no watcher registered under that name")
-  (swap! registry update name (fn [watcher] (add-watch watcher key f))))
+  (swap! registry assoc-in [name key] f))
 
 (defn remove-watch! [name key]
-  (assert (contains? @registry name) "no watcher registered under that name")
-  (swap! registry update name (fn [watcher] (remove-watch watcher key))))
+  (swap! registry update name dissoc key))
 
 ;; The wasm engine will call this function on all output batches.
 (gobj/set
  js/window "__UGLY_DIFF_HOOK"
  (fn [name batch]
    (let [unwrap-type  (fn [boxed] (second (first boxed)))
-         unwrap-tuple (fn [[tuple diff timestamp]] [(mapv unwrap-type tuple) diff timestamp])]
-     (if-some [watcher (get @registry name)]
+         unwrap-tuple (fn [[tuple time diff]] [(mapv unwrap-type tuple) time diff])]
+     (if-some [observers (vals (get @registry name))]
        (let [batch (->> batch
                         (js->clj)
                         (map unwrap-tuple))]
-         (-apply-diff watcher batch))
-       #_(println name)))))
+         (doseq [f observers]
+           (f batch)))
+       (println "unconsumed results for" name)))))
 
 (defn pipe-log [x]
   (println x)
@@ -117,24 +73,29 @@
   (let [[value update-value] (js/React.useState nil)]
     (js/React.useEffect
      (fn []
-       (let [key (gensym "use-query")]
-         (add-watch! name key (fn [_ _ batch] (update-value batch)))
+       (let [key  (gensym "use-query")
+             time (fn [[tuple time diff]] time)
+             diff (fn [[tuple time diff]] diff)]
+         (add-watch! name key (fn [batch]
+                                (let [next (->> batch
+                                                (sort-by time)
+                                                (partition-by time)
+                                                last
+                                                (filter (comp pos? diff))
+                                                last)]
+                                  (when (some? next)
+                                    (update-value next)))))
          (fn []
            (remove-watch! name key)))))
     value))
 
 (defn Root
   []
-  (let [[count set-count] (js/React.useState 0)
-        v                 (use-query "mouse")]
-    (println v)
+  (let [[[x y] _ _] (use-query "mouse")]
     (html
-     [:div
-      [:svg#canvas
-       [:g
-        [:circle {:cx 400 :cy 400 :r 30 :stroke "black" :fill "red"}]]]
-      [:button {:onClick (fn [e] (set-count (inc count)))}
-       (str "Click Me :: " count)]])))
+     [:svg#canvas
+      [:g
+       [:circle {:cx x :cy y :r 30 :stroke "black" :fill "red"}]]])))
 
 (defn mount
   [component node]
@@ -154,8 +115,8 @@
 
 (defn- handle-mousemove [e]
   (exec!
-    (d/transact db [[:db/add mouse :mouse/x (. e -screenX)]
-                    [:db/add mouse :mouse/y (. e -screenY)]]))
+    (d/transact db [[:db/add mouse :mouse/x (. e -clientX)]
+                    [:db/add mouse :mouse/y (. e -clientY)]]))
   (.stopPropagation e)
   e)
 
@@ -183,8 +144,6 @@
              db "mouse"
              '[:find ?x ?y :where [?mouse :mouse/x ?x] [?mouse :mouse/y ?y]])))
          
-         (swap! registry assoc "mouse" (tuple-watcher [:mouse/x :mouse/y]))
-
          (setup)
          (mount Root (.getElementById js/document "app-container"))))
       )
