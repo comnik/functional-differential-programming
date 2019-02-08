@@ -4,6 +4,6 @@
   org.clojure/clojurescript {:mvn/version "1.10.439"}
   com.bhauman/figwheel-main {:mvn/version "0.1.9"}
   comnik/clj-3df            {:git/url       "git@github.com:comnik/clj-3df.git"
-                             :sha           "3e26a6737cee6081e809e6b87224779ca0fe5f5e"
+                             :sha           "52753c7d3c05f1144518e4d2c1d835452877ddc8"
                              :deps/manifest :deps}
-  rum                       {:mvn/version "0.11.3"}}}
+  hicada                    {:mvn/version "0.1.8"}}}
