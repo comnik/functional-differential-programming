@@ -128,7 +128,7 @@
         on-dec              (fn [e] (exec! (d/transact db [[:db/retract counter :counter/click true]])))]
     (println change-class diff)
     (html
-     [:div
+     [:.example
       [:p nil "The task is to build a frame containing a label or
       read-only textfield T and a button B. Initially, the value in T
       is “0” and each click of B increases the value in T by one."]
@@ -136,7 +136,7 @@
       [:button {:on-click on-inc} "+"]
       [:button {:on-click on-dec} "-"]])))
 
-(defn Root
+(defn Temp
   []
   (let [[celsius]     (use-snapshot most-recent "celsius")
         on-celsius    (fn [e]
@@ -149,24 +149,29 @@
                             (let [c (js/Math.round (fahrenheit->celsius f))]
                               (exec! (d/transact db [[:db/add temp :degrees/celsius c]]))))))]
     (html
-     [:div
-      (Counter)
-      [:div
-       [:p nil "The task is to build a frame containing two textfields
+     [:.example
+      [:p nil "The task is to build a frame containing two textfields
       TC and TF representing the temperature in Celsius and
       Fahrenheit, respectively. Initially, both TC and TF are
       empty. When the user enters a numerical value into TC the
       corresponding value in TF is automatically updated and vice
       versa. When the user enters a non-numerical string into TC the
       value in TF is not updated and vice versa."]
-       [:input {:type        "text"
-                :placeholder "Celsius"
-                :value       (or celsius "")
-                :on-change   on-celsius}]
-       [:input {:type        "text"
-                :placeholder "Fahrenheit"
-                :value       (or (celsius->fahrenheit celsius) "")
-                :on-change   on-fahrenheit}]]])))
+      [:input {:type        "text"
+               :placeholder "Celsius"
+               :value       (or celsius "")
+               :on-change   on-celsius}]
+      [:input {:type        "text"
+               :placeholder "Fahrenheit"
+               :value       (or (celsius->fahrenheit celsius) "")
+               :on-change   on-fahrenheit}]])))
+
+(defn Root
+  []
+  (html
+   [:#examples
+    (Counter)
+    (Temp)]))
 
 (defn mount
   [component node]

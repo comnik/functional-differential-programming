@@ -76,7 +76,31 @@ body {
     color: #000000;
 }
 
+p {
+    line-height: 1.45em;
+    margin-bottom: 2em;
+}
+
 svg#canvas {
     width: 100vw;
     height: 100vh;
+}
+
+#examples {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+}
+
+.example {
+    background: #fff;
+    flex: 1;
+    border: 1px solid #e5e5e5;
+    border-radius: 4px;
+    padding: 1em;
+    margin: 1.5em 1em;
+}
+
+.example p {
+    color: var(--color-text-secondary);
 }
