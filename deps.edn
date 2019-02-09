@@ -6,4 +6,5 @@
   comnik/clj-3df            {:git/url       "git@github.com:comnik/clj-3df.git"
                              :sha           "52753c7d3c05f1144518e4d2c1d835452877ddc8"
                              :deps/manifest :deps}
-  hicada                    {:mvn/version "0.1.8"}}}
+  hicada                    {:mvn/version "0.1.8"}
+  datascript                {:mvn/version "0.17.1"}}}

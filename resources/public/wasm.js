@@ -592,6 +592,10 @@ Module.STDWEB_PRIVATE.acquire_tmp = function( dummy ) {
     return Module.STDWEB_PRIVATE.acquire_tmp(Module.instance.exports.step());
 }
 ;
+                Module.exports.reconcile = function reconcile() {
+    Module.instance.exports.reconcile();
+}
+;
             __web_on_grow();
             Module.instance.exports.main();
 

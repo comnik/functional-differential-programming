@@ -6,13 +6,14 @@
 
 (enable-console-print!)
 
+(def schema
+  {:mouse/x {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}
+   :mouse/y {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}})
+
+(def db (d/create-db schema))
+(def mouse 0)
+
 (defonce registry (atom {}))
-
-(defn add-watch! [name key f]
-  (swap! registry assoc-in [name key] f))
-
-(defn remove-watch! [name key]
-  (swap! registry update name dissoc key))
 
 ;; The wasm engine will call this function on all output batches.
 (gobj/set
@@ -24,8 +25,8 @@
        (let [batch (->> batch
                         (js->clj)
                         (map unwrap-tuple))]
-         (doseq [f observers]
-           (f batch)))
+         (doseq [observer observers]
+           (observer batch)))
        (println "unconsumed results for" name)))))
 
 (defn pipe-log [x]
@@ -44,13 +45,10 @@
                js/window.msRequestAnimationFrame))
       #(js/setTimeout % 16)))
 
-(def next-tx (atom 0))
-
 (defn reconcile [t]
-  (let [work-remaining? (.step engine)]
-    (if work-remaining?
-      (schedule reconcile)
-      (vreset! reconcile? false))))
+  (.handle engine (clj->js [{:AdvanceDomain [nil (js/Date.now)]}]))
+  (.reconcile engine)
+  (vreset! reconcile? false))
 
 (defn request-reconcile
   "Schedules engine steps on animation frames until all dataflows are
@@ -65,9 +63,6 @@
   (->> requests (clj->js) #_(pipe-log) (.handle engine))
   (request-reconcile))
 
-(def v-width (.-innerWidth js/window))
-(def v-height (.-innerHeight js/window))
-
 (defn use-query
   [name]
   (let [[value update-value] (js/React.useState nil)]
@@ -76,17 +71,17 @@
        (let [key  (gensym "use-query")
              time (fn [[tuple time diff]] time)
              diff (fn [[tuple time diff]] diff)]
-         (add-watch! name key (fn [batch]
-                                (let [next (->> batch
-                                                (sort-by time)
-                                                (partition-by time)
-                                                last
-                                                (filter (comp pos? diff))
-                                                last)]
-                                  (when (some? next)
-                                    (update-value next)))))
+         (swap! registry assoc-in [name key] (fn [batch]
+                                               (let [next (->> batch
+                                                               (sort-by time)
+                                                               (partition-by time)
+                                                               last
+                                                               (filter (comp pos? diff))
+                                                               last)]
+                                                 (when (some? next)
+                                                   (update-value next)))))
          (fn []
-           (remove-watch! name key)))))
+           (swap! registry update name dissoc key)))))
     value))
 
 (defn Root
@@ -100,18 +95,6 @@
 (defn mount
   [component node]
   (js/ReactDOM.render ((js/React.createFactory component)) node))
-
-(def schema
-  {:key/pressed? {:db/valueType :Bool}
-   :mouse/x      {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}
-   :mouse/y      {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}})
-
-(def db (d/create-db schema))
-
-(def nextId (atom 0))
-(defn next-id [] (swap! nextId inc))
-
-(def mouse (next-id))
 
 (defn- handle-mousemove [e]
   (exec!
@@ -128,7 +111,7 @@
   (println "teardown")
   (.removeEventListener js/document "mousemove" handle-mousemove))
 
-(defonce initialization-block
+(defonce initialization
   (do
     (doto js/Rust.wasm
       (.then
@@ -142,9 +125,10 @@
             (d/create-db-inputs db)
             (d/register-query
              db "mouse"
-             '[:find ?x ?y :where [?mouse :mouse/x ?x] [?mouse :mouse/y ?y]])))
-         
+             '[:find ?x ?y
+               :where [?mouse :mouse/x ?x] [?mouse :mouse/y ?y]])))
+
          (setup)
-         (mount Root (.getElementById js/document "app-container"))))
-      )
+         
+         (mount Root (.getElementById js/document "app-container")))))
     true))
