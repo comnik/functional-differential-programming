@@ -61,30 +61,55 @@
 
 (defn exec!
   [requests]
-  (->> requests (clj->js) (pipe-log) (.handle engine))
+  (->> requests (clj->js) #_(pipe-log) (.handle engine))
   (request-reconcile))
 
+(defn result-time [[tuple time diff]] time)
+(defn result-diff [[tuple time diff]] diff)
+
+(defn classify [batch]
+  (let [diffs (into #{} (map result-diff) batch)]
+    (case [(contains? diffs -1) (contains? diffs 1)]
+      [true true]   :diff/change
+      [true false]  :diff/retract
+      [false true]  :diff/add
+      [false false] :diff/noop)))
+
+(defn most-recent [v batch]
+  (let [next (->> batch
+                  last
+                  (filter (comp pos? result-diff))
+                  last
+                  first)]
+    (when (some? next)
+      next)))
+
 (defn use-snapshot
-  [name]
+  [f name]
   (let [[value update-value] (js/React.useState nil)]
     (js/React.useEffect
      (fn []
-       (let [key  (gensym "use-snapshot")
-             time (fn [[tuple time diff]] time)
-             diff (fn [[tuple time diff]] diff)]
-         (swap! registry assoc-in [name key] (fn [batch]
-                                               (let [next (->> batch
-                                                               (sort-by time)
-                                                               (partition-by time)
-                                                               last
-                                                               (filter (comp pos? diff))
-                                                               last
-                                                               first)]
-                                                 (when (some? next)
-                                                   (update-value next)))))
+       (let [key  (gensym "use-snapshot")]
+         (swap! registry assoc-in [name key] (fn [batch] (f value batch)))
          (fn []
            (swap! registry update name dissoc key)))))
     value))
+
+(defn use-diff
+  [f name]
+  (let [[[value time diff] update-value] (js/React.useState [nil 0 nil])]
+    (js/React.useEffect
+     (fn []
+       (let [key (gensym "use-diff")]
+         (swap! registry assoc-in [name key] (fn [batch]
+                                               (let [batch (->> batch
+                                                                (sort-by result-time)
+                                                                (partition-by result-time))
+                                                     next  (-> batch last first result-time)]
+                                                 (update-value [(f value batch) next batch]))))
+         (fn []
+           (swap! registry update name dissoc key)))))
+    [value time diff]))
 
 (defn fahrenheit->celsius [f]
   (when (some? f) (* (- f 32) (/ 5 9))))
@@ -92,24 +117,28 @@
 (defn celsius->fahrenheit [c]
   (when (some? c) (+ (* c (/ 9 5)) 32)))
 
-(comment
-  (defn Counter
-    []
-    (let [[_ count] (use-snapshot
-                     '[:find ?counter (count ?click)
-                       :where [?counter :counter/click ?click]])
-          on-click  (fn [e]
-                      (exec!
-                        (d/transact db [[:db/add counter :counter/click true]])))]
-      (html
-       [:div
-        [:button {:on-click on-click} (str "Count: " (or count 0))]]))))
+(defn Counter
+  []
+  (let [[[count] time diff] (use-diff most-recent "counter")
+        change-class        (classify (last diff))
+        ;; q                   '[:find ?counter (count ?click)
+        ;;                       :where [?counter :counter/click ?click]]
+        ;; [[count] time diff] (use-diff most-recent q)
+        on-inc              (fn [e] (exec! (d/transact db [[:db/add counter :counter/click true]])))
+        on-dec              (fn [e] (exec! (d/transact db [[:db/retract counter :counter/click true]])))]
+    (println change-class diff)
+    (html
+     [:div
+      [:p nil "The task is to build a frame containing a label or
+      read-only textfield T and a button B. Initially, the value in T
+      is “0” and each click of B increases the value in T by one."]
+      (str "Count: " (or count 0) " (at time " time ")")
+      [:button {:on-click on-inc} "+"]
+      [:button {:on-click on-dec} "-"]])))
 
 (defn Root
   []
-  (let [[_ count]     (use-snapshot "counter")
-        [celsius]     (use-snapshot "celsius")
-        on-click      (fn [e] (exec! (d/transact db [[:db/add counter :counter/click true]])))
+  (let [[celsius]     (use-snapshot most-recent "celsius")
         on-celsius    (fn [e]
                         (when-some [c (js/parseInt (.. e -target -value))]
                           (when-not (js/isNaN c)
@@ -121,11 +150,7 @@
                               (exec! (d/transact db [[:db/add temp :degrees/celsius c]]))))))]
     (html
      [:div
-      [:div
-       [:p nil "The task is to build a frame containing a label or
-      read-only textfield T and a button B. Initially, the value in T
-      is “0” and each click of B increases the value in T by one."]
-       [:button {:on-click on-click} (str "Count: " (or count 0))]]
+      (Counter)
       [:div
        [:p nil "The task is to build a frame containing two textfields
       TC and TF representing the temperature in Celsius and
@@ -168,7 +193,7 @@
 
             (d/register-query
              db "counter"
-             '[:find ?counter (count ?click)
+             '[:find (count ?click)
                :where [?counter :counter/click ?click]])
 
             (d/register-query
