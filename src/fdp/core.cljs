@@ -8,11 +8,14 @@
 
 (def schema
   {:counter/click   {:db/valueType :Bool :db/semantics :db.semantics/raw}
-   :degrees/celsius {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}})
+   :degrees/celsius {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}
+   :mouse/x         {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}
+   :mouse/y         {:db/valueType :Number :db/semantics :db.semantics.cardinality/one}})
 
 (def db (d/create-db schema))
 (def counter 0)
 (def temp 1)
+(def mouse 2)
 
 (defonce registry (atom {}))
 
@@ -30,9 +33,7 @@
            (observer batch)))
        (println "unconsumed results for" name)))))
 
-(defn pipe-log [x]
-  (println x)
-  x)
+(defn dbg! [x] (println x) x)
 
 (declare engine)
 
@@ -61,7 +62,7 @@
 
 (defn exec!
   [requests]
-  (->> requests (clj->js) #_(pipe-log) (.handle engine))
+  (->> requests #_(dbg!) (clj->js) (.handle engine))
   (request-reconcile))
 
 (defn result-time [[tuple time diff]] time)
@@ -81,34 +82,37 @@
                   (filter (comp pos? result-diff))
                   last
                   first)]
-    (when (some? next)
-      next)))
+    (if (some? next) next v)))
 
 (defn use-snapshot
   [f name]
   (let [[value update-value] (js/React.useState nil)]
     (js/React.useEffect
      (fn []
-       (let [key  (gensym "use-snapshot")]
+       (let [key (gensym "use-snapshot")]
          (swap! registry assoc-in [name key] (fn [batch] (f value batch)))
          (fn []
-           (swap! registry update name dissoc key)))))
+           (swap! registry update name dissoc key))))
+     [name])
     value))
 
 (defn use-diff
   [f name]
-  (let [[[value time diff] update-value] (js/React.useState [nil 0 nil])]
+  (let [[[value time diff :as current] update-value] (js/React.useState [nil 0 nil])]
     (js/React.useEffect
      (fn []
        (let [key (gensym "use-diff")]
          (swap! registry assoc-in [name key] (fn [batch]
-                                               (let [batch (->> batch
-                                                                (sort-by result-time)
-                                                                (partition-by result-time))
-                                                     next  (-> batch last first result-time)]
-                                                 (update-value [(f value batch) next batch]))))
+                                               (if (empty? batch)
+                                                 (update-value current)
+                                                 (let [batch (->> batch
+                                                                  (sort-by result-time)
+                                                                  (partition-by result-time))
+                                                       next  (-> batch last first result-time)]
+                                                   (update-value [(f value batch) next batch])))))
          (fn []
-           (swap! registry update name dissoc key)))))
+           (swap! registry update name dissoc key))))
+     [name])
     [value time diff]))
 
 (defn fahrenheit->celsius [f]
@@ -126,7 +130,7 @@
         ;; [[count] time diff] (use-diff most-recent q)
         on-inc              (fn [e] (exec! (d/transact db [[:db/add counter :counter/click true]])))
         on-dec              (fn [e] (exec! (d/transact db [[:db/retract counter :counter/click true]])))]
-    (println change-class diff)
+    (println "re-rendering Counter" change-class diff)
     (html
      [:.example
       [:p nil "The task is to build a frame containing a label or
@@ -148,6 +152,7 @@
                           (when-not (js/isNaN f)
                             (let [c (js/Math.round (fahrenheit->celsius f))]
                               (exec! (d/transact db [[:db/add temp :degrees/celsius c]]))))))]
+    (println "re-rendering Temp" celsius)
     (html
      [:.example
       [:p nil "The task is to build a frame containing two textfields
@@ -166,12 +171,45 @@
                :value       (or (celsius->fahrenheit celsius) "")
                :on-change   on-fahrenheit}]])))
 
+(def bbox-cache (atom nil))
+
+(defn Circles
+  []
+  (let [ref           (js/React.useRef)
+        [[x y] _ _]   (use-diff most-recent "mouse")
+        on-mouse-move (fn [e]
+                        (let [bbox (if-some [bbox @bbox-cache]
+                                     bbox
+                                     (when-some [current (.-current ref)]
+                                       (let [rect (.getBoundingClientRect current)]
+                                         (reset! bbox-cache rect))))]
+                          (when (some? bbox)
+                            (exec!
+                              (d/transact db [[:db/add mouse :mouse/x (js/Math.round (- (.-clientX e) (.-left bbox)))]
+                                              [:db/add mouse :mouse/y (js/Math.round (- (.-clientY e) (.-top bbox)))]]))))
+                        (.stopPropagation e))]
+    (println "re-rendering Circles" x y)
+    (html
+     [:.example
+      [:svg#canvas {:ref ref :on-mouse-move on-mouse-move}
+       [:g
+        [:circle {:cx x :cy y :r 30 :stroke "black" :fill "red"}]]]])))
+
+(defn Test
+  [props]
+  (let [[x setX] (js/React.useState 0)]
+    (println "re-rendering" (.-id props))
+    (html
+     [:button {:on-click #(setX (inc x))} (str "button " x)])))
+
 (defn Root
   []
+  (println "re-rendering Root")
   (html
    [:#examples
-    (Counter)
-    (Temp)]))
+    [:> Counter {}]
+    [:> Temp {}]
+    [:> Circles {}]]))
 
 (defn mount
   [component node]
@@ -204,9 +242,14 @@
             (d/register-query
              db "celsius"
              '[:find ?celsius :where [?temp :degrees/celsius ?celsius]])
+
+            (d/register-query
+             db "mouse"
+             '[:find ?x ?y
+               :where [?mouse :mouse/x ?x] [?mouse :mouse/y ?y]])
             ))
 
          (setup)
-         
+
          (mount Root (.getElementById js/document "app-container")))))
     true))
