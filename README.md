@@ -2,7 +2,7 @@
 
 ## Build / Run
 
-You need to have nginx installed. Starting a development server on
+You need to have nginx installed, with application/wasm wasm added to default mime.types (https://github.com/mdn/webassembly-examples/issues/5). Starting a development server on
 port 8080:
 
 ``` shell
